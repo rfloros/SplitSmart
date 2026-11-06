@@ -1,0 +1,58 @@
+@startuml
+title Expense Creation and Approval
+
+|Swing client|
+start
+:Enter expense, payer, participants,
+ split, and optional receipt;
+:Submit to service API;
+
+|Service|
+:Authenticate account;
+:Authorize current group membership;
+if (Valid members, amount, and split?) then (yes)
+  :Calculate exact shares with
+  largest-remainder allocation;
+  |Receipt storage|
+  :Validate and store optional image
+  privately before linking;
+  |PostgreSQL and receipt store|
+  :Transactionally persist PENDING
+  expense, shares, receipt reference,
+  and in-app notifications;
+  |Service|
+  :Return pending expense;
+else (no)
+  :Return clear validation/authorization error;
+  stop
+endif
+
+|Reviewer client|
+:Open pending expense details;
+:Submit approve or reject;
+
+|Service|
+:Check current reviewer permission;
+if (Authorized reviewer?) then (yes)
+  |PostgreSQL|
+  :Conditionally transition only
+  PENDING expense and record decision;
+  if (Transition succeeds?) then (yes)
+    if (Decision is approve?) then (yes)
+      :Commit APPROVED state;
+      note right
+        Approved shares become inputs
+        to derived balances.
+      end note
+    else (no)
+      :Commit REJECTED state;
+    endif
+  else (no)
+    :Return conflict; no second effect;
+  endif
+else (no)
+  |Service|
+  :Deny without changing state or balance;
+endif
+stop
+@enduml

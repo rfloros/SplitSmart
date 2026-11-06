@@ -1,0 +1,50 @@
+@startuml
+title Payment Settlement
+
+|Payer client|
+start
+:Enter recipient, amount, and date;
+:Submit payment;
+
+|Service|
+:Authorize group membership;
+:Derive current outstanding obligation;
+if (Positive amount, correct currency,
+ and within outstanding amount?) then (yes)
+  |PostgreSQL|
+  :Persist payment as PENDING;
+  |Service|
+  :Return pending payment;
+  note right
+    Pending payments do not
+    affect balances.
+  end note
+else (no)
+  :Return validation error;
+  stop
+endif
+
+|Recipient client|
+:Review pending payment;
+:Confirm receipt;
+
+|Service|
+:Verify caller is recipient;
+:Recheck outstanding amount;
+|PostgreSQL|
+if (Still valid and payment is PENDING?) then (yes)
+  :Atomically transition to CONFIRMED;
+  :Commit once;
+  |Service|
+  :Return confirmed payment;
+  note right
+    Derived balance decreases
+    by the confirmed amount.
+  end note
+else (no)
+  :Keep payment pending;
+  |Service|
+  :Return conflict/validation message;
+endif
+stop
+@enduml

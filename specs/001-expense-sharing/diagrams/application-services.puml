@@ -1,0 +1,102 @@
+@startuml
+title SplitSmart Application and Service Layers
+hide empty members
+skinparam componentStyle rectangle
+
+package "Desktop client" {
+  class SwingView
+  class SwingPresenter
+  class ApiClient
+  SwingView --> SwingPresenter
+  SwingPresenter --> ApiClient : HTTPS request
+}
+
+package "Service adapters" {
+  class RestController
+  class RequestAuthenticator
+  RestController --> RequestAuthenticator
+}
+
+package "Application use cases" {
+  class IdentityService
+  class GroupService
+  class ExpenseService
+  class ApprovalService
+  class BalanceQueryService
+  class PaymentService
+  class ReportingService
+  class NotificationService
+}
+
+package "Domain" {
+  class SplitAllocator
+  class Expense
+  class Payment
+  class Money
+}
+
+package "Ports" {
+  interface AccountRepository
+  interface GroupRepository
+  interface ExpenseRepository
+  interface PaymentRepository
+  interface NotificationRepository
+  interface ReceiptStorage
+  interface EmailDelivery
+  interface UnitOfWork
+}
+
+package "Infrastructure adapters" {
+  class PostgreSqlRepositories
+  class PostgreSqlUnitOfWork
+  class PrivateReceiptStore
+  class EmailProviderAdapter
+}
+
+ApiClient --> RestController : OpenAPI contract
+RestController --> IdentityService
+RestController --> GroupService
+RestController --> ExpenseService
+RestController --> ApprovalService
+RestController --> BalanceQueryService
+RestController --> PaymentService
+RestController --> ReportingService
+RestController --> NotificationService
+
+ExpenseService --> SplitAllocator
+ExpenseService --> Expense
+ApprovalService --> Expense
+BalanceQueryService --> Expense
+BalanceQueryService --> Payment
+PaymentService --> Payment
+IdentityService --> AccountRepository
+IdentityService --> EmailDelivery
+GroupService --> GroupRepository
+ExpenseService --> ExpenseRepository
+ExpenseService --> ReceiptStorage
+ExpenseService --> NotificationRepository
+ExpenseService --> UnitOfWork
+ApprovalService --> ExpenseRepository
+ApprovalService --> UnitOfWork
+PaymentService --> PaymentRepository
+PaymentService --> UnitOfWork
+BalanceQueryService --> ExpenseRepository
+BalanceQueryService --> PaymentRepository
+ReportingService --> ExpenseRepository
+ReportingService --> PaymentRepository
+NotificationService --> NotificationRepository
+
+PostgreSqlRepositories ..|> AccountRepository
+PostgreSqlRepositories ..|> GroupRepository
+PostgreSqlRepositories ..|> ExpenseRepository
+PostgreSqlRepositories ..|> PaymentRepository
+PostgreSqlRepositories ..|> NotificationRepository
+PostgreSqlUnitOfWork ..|> UnitOfWork
+PrivateReceiptStore ..|> ReceiptStorage
+EmailProviderAdapter ..|> EmailDelivery
+
+note bottom of SwingPresenter
+  No business rules, SQL, or direct database access.
+  Run network work off the Swing EDT.
+end note
+@enduml
