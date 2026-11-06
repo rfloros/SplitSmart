@@ -1,99 +1,89 @@
 # Research: SplitSmart Expense Sharing
 
-## Shared persistence and client architecture
+## Selected decision (2026-11-05): simplified Architecture B
 
-**Decision**: The MVP uses the Swing application as a client of a shared Java service
-over HTTPS. The service owns authorization, domain use cases, and PostgreSQL
-persistence. The desktop client does not connect directly to the database.
+**Decision**: One Java 21/Maven module; local Swing application; embedded SQLite;
+app-managed receipt directory; simulated verification/recovery outbox; ports/adapters
+with passive views and plain-Java presenters. See [docs/decisions.md](../../docs/decisions.md).
 
-**Rationale**: Accounts and groups must be shared between people and the original
-product is intended to support multiple clients. A central service gives separate
-desktop installations one authoritative source of truth. SQLite is appropriate for
-local or single-device storage, but does not by itself synchronize separate
-installations; H2 server mode would centralize a database but would still need an
-application service for authorization, business rules, email, and a client API.
+**Rationale**: CIS 285 is a short lab sequence ending after the next continuation, so a
+local single-machine application with no server, PostgreSQL, or deployment is
+preferred. B has the clearest GUI/logic separation and the best JUnit 5 seams.
+SQLite serializes writers, which gives a simple concrete concurrency rule
+(`BEGIN IMMEDIATE`) for the payment-oversettlement race found in review.
 
-**Alternatives considered**:
+**Accepted trade-offs**: single-device simulation, simulated email, deferred web/mobile
+(see the exception table in [spec.md](./spec.md#architecture-and-scope-decision-2026-11-05)).
 
-- **SQLite embedded in each desktop installation**: simplest for a local-only
-  demonstration, but every installation would have separate group data. It does
-  not satisfy shared live group state without a synchronization service.
-- **H2 server mode**: can centralize data, but does not replace the required
-  application/API layer.
-- **PostgreSQL behind a shared service**: selected because transaction boundaries,
-  service authorization, and a common API serve the desktop MVP and later clients.
+**Simplifications adopted from review**: drop the event bus, handlers, and separate
+ledger because conditional state transitions already prevent duplicate effects; write
+notifications in the expense transaction; reject (never silently round) excess input
+precision; exact integer allocation; current-membership check at payment
+confirmation; whole-transaction retry on busy.
 
-## Layering and Swing behavior
+## Historical: Architecture A (not selected; not in lab scope)
 
-**Decision**: Keep Swing presentation, application use cases, domain rules, and
-infrastructure adapters in separate modules/layers. The Swing client delegates to
-the API; it never implements expense allocation, approval, or balance decisions.
+Retained for comparison and as a future-extension reference only.
 
-**Rationale**: Swing's separable-model approach supports independent views and
-application data. Network calls run off the Event Dispatch Thread, then the UI is
-updated on the EDT. The server-side domain and application modules can be tested
-without constructing Swing components.
+**A's approach**: Swing client of a shared HTTPS Java service backed by PostgreSQL,
+with real email delivery and private shared receipt storage; three Maven modules;
+OpenAPI contract.
 
-**Alternatives considered**: Direct JDBC calls from Swing listeners were rejected
-because that couples presentation to persistence, duplicates business rules across
-future clients, and exposes database access to desktop installations.
+**A's rationale**: separate installations need one authoritative source of truth;
+SQLite embedded per installation does not synchronize; H2 server mode would still need
+an application service; PostgreSQL behind a service gives transactions, central
+authorization, and a client API for future web/mobile clients.
 
-## Transactions, monetary representation, and idempotency
+**Why it was not selected for the lab**: it needs a server runtime, HTTPS/session
+handling, PostgreSQL, schema deployment, mail delivery, and shared receipt storage —
+infrastructure beyond a class lab (the decision is the user's; review history is in
+[docs/architecture-review.md](../../docs/architecture-review.md) and
+[docs/reviews/architecture-reviews.md](../../docs/reviews/architecture-reviews.md)).
 
-**Decision**: Run approval and payment confirmation as database transactions.
-Treat approved expenses and confirmed payments as the authoritative inputs to
-derived balances; persist money as integer minor units with an ISO currency code.
-Use `BigDecimal` in all domain calculations and an explicit currency scale and
-rounding mode at allocation boundaries.
+**Where A remains relevant**: if the product moves to shared multi-device use or web/mobile
+clients (FR-016), a central service like A is the natural direction; the
+[future REST proposal](./contracts/openapi.yaml) is the starting point. That migration
+needs shared persistence, network identity/security, API contracts, real email, and
+re-verified concurrency; none of it exists now.
 
-**Rationale**: PostgreSQL transactions provide all-or-nothing updates; JDBC exposes
-commit and rollback controls. A conditional transition from `PENDING` prevents
-duplicate expense decisions or payment confirmations from applying twice. Integer
-minor-unit persistence avoids approximate decimal database representations, while
-`BigDecimal` meets the domain's no-binary-floating-point requirement.
+## Transactions, money, and idempotency
 
-**Alternatives considered**: Persisting balances as independently updated values
-was rejected because they could drift from the expense/payment history. Floating
-point types were rejected by the constitution and NFR-001.
+**Decision**: Each state-changing use case runs in one SQLite `BEGIN IMMEDIATE`
+transaction on one shared connection; approved expenses and confirmed payments are the
+authoritative inputs to derived balances; money is `BigDecimal` at the domain boundary
+with exact integer minor units for arithmetic and storage.
+
+**Rationale**: SQLite allows one writer at a time; taking the write lock before reading
+state makes check-then-update atomic, so two pending payments cannot both confirm
+against the same debt. Conditional `PENDING` transitions prevent duplicate decisions.
+Integer arithmetic gives exact largest-remainder allocation without approximate
+division.
+
+**Alternatives rejected**: stored balance totals (can drift); a separate ledger plus
+events (extra representation to keep atomic; unnecessary here); `HALF_EVEN` input
+normalization (silently changes entered amounts); finite-precision division for
+percentages (cannot guarantee remainder ranking); SQLite `SUM` over money (floating
+aggregation risk beyond integer range); floating point (constitution, NFR-001).
 
 ## Authentication and receipts
 
-**Decision**: Keep account registration, verified-email state, authentication, and
-password-reset tokens in the service. Store password hashes produced by a suitable
-slow password-hashing algorithm; use a mail-delivery port for verification and
-recovery messages. Store receipt metadata and access control in PostgreSQL and
-content behind a private receipt-storage port.
+**Decision**: Passwords hashed with salted PBKDF2 (JDK); tokens random, stored hashed,
+expiring, single-use; messages delivered to a simulated in-app outbox reachable before
+sign-in (lab-only). Receipts are validated by content, copied to a private local
+directory under opaque IDs, retrieved only through an authorized use case.
 
-**Rationale**: Central identity prevents credentials and mail-service secrets from
-being distributed to each desktop installation. Expiring, single-use reset tokens
-and non-enumerating recovery responses follow OWASP guidance. A storage port
-isolates receipt access so storage can change without altering domain rules.
-
-**Alternatives considered**: Plaintext passwords, reusable reset links, and
-desktop-local receipt paths were rejected because they expose credentials or fail
-to support shared, authorized receipt access.
-
-## Service and client contract
-
-**Decision**: Describe the HTTPS/JSON interface with OpenAPI. Keep server runtime
-framework and mail provider behind adapters; neither is needed to specify the
-domain, transaction boundaries, or client contract.
-
-**Rationale**: OpenAPI gives future web and mobile clients a discoverable contract
-without coupling them to Swing or server implementation details. Deferring a
-framework choice avoids an unsupported dependency decision at the architecture
-stage.
-
-**Alternatives considered**: A Java-only service interface would not define a
-language-neutral contract for future non-Java clients.
+**Rationale**: demonstrates the token lifecycle and private-receipt behavior without
+external services; its limits (no real email ownership, no distributed access) are
+recorded as scope exceptions.
 
 ## References
 
 - SQLite, [Appropriate Uses For SQLite](https://www.sqlite.org/whentouse.html)
-- PostgreSQL, [Transactions](https://www.postgresql.org/docs/current/tutorial-transactions.html)
-- Java 21, [`Connection`](https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/java/sql/Connection.html)
-- Oracle, [Swing components and models](https://docs.oracle.com/javase/tutorial/uiswing/components/model.html)
+- SQLite, [Transactions (BEGIN IMMEDIATE)](https://www.sqlite.org/lang_transaction.html)
+- SQLite, [Write-Ahead Logging](https://www.sqlite.org/wal.html)
+- Java 21, [`BigDecimal`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/math/BigDecimal.html)
 - Java 21, [`SwingWorker`](https://docs.oracle.com/en/java/javase/21/docs/api/java.desktop/javax/swing/SwingWorker.html)
-- OpenAPI Initiative, [OpenAPI Specification](https://spec.openapis.org/oas/latest.html)
+- Oracle, [Swing components and models](https://docs.oracle.com/javase/tutorial/uiswing/components/model.html)
 - OWASP, [Forgot Password Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html)
 - OWASP, [Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+- Historical (A): PostgreSQL [Transactions](https://www.postgresql.org/docs/current/tutorial-transactions.html); OpenAPI [Specification](https://spec.openapis.org/oas/latest.html)

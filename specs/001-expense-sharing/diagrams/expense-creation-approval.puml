@@ -1,58 +1,114 @@
 @startuml
-title Expense Creation and Approval
+title Expense Creation and Approval - simplified Architecture B (local, synchronous)
 
-|Swing client|
+|Member (Swing view/presenter)|
 start
-:Enter expense, payer, participants,
- split, and optional receipt;
-:Submit to service API;
+:Enter group, payer, participants, amount, date,
+description, split method, optional receipt file;
+:Submit (presenter runs use case off the EDT);
 
-|Service|
-:Authenticate account;
-:Authorize current group membership;
-if (Valid members, amount, and split?) then (yes)
-  :Calculate exact shares with
-  largest-remainder allocation;
-  |Receipt storage|
-  :Validate and store optional image
-  privately before linking;
-  |PostgreSQL and receipt store|
-  :Transactionally persist PENDING
-  expense, shares, receipt reference,
-  and in-app notifications;
-  |Service|
-  :Return pending expense;
-else (no)
-  :Return clear validation/authorization error;
+|ExpenseService (application.service)|
+:Resolve trusted current account
+(no actor ID in the command);
+:Validate input shape: plain decimal, exact at group scale
+(reject e.g. USD 10.005), size limits, percentages;
+if (Input valid?) then (no)
+  :Return ValidationFailed (nothing stored);
+  |Member (Swing view/presenter)|
+  :Show clear message;
   stop
+else (yes)
 endif
 
-|Reviewer client|
-:Open pending expense details;
-:Submit approve or reject;
-
-|Service|
-:Check current reviewer permission;
-if (Authorized reviewer?) then (yes)
-  |PostgreSQL|
-  :Conditionally transition only
-  PENDING expense and record decision;
-  if (Transition succeeds?) then (yes)
-    if (Decision is approve?) then (yes)
-      :Commit APPROVED state;
-      note right
-        Approved shares become inputs
-        to derived balances.
-      end note
-    else (no)
-      :Commit REJECTED state;
-    endif
-  else (no)
-    :Return conflict; no second effect;
+|LocalReceiptStore (adapter.out.files)|
+if (Receipt attached?) then (yes)
+  :Validate JPEG/PNG by content, size <= 10 MiB;
+  if (Valid?) then (no)
+    |Member (Swing view/presenter)|
+    :Show receipt error; nothing stored;
+    stop
+  else (yes)
+    :Copy file to app-managed directory
+    under an opaque ID (outside SQLite commit);
   endif
 else (no)
-  |Service|
-  :Deny without changing state or balance;
+endif
+
+|SQLite UnitOfWork (one connection)|
+:BEGIN IMMEDIATE;
+:Check current membership of submitter, payer
+and every participant in the group;
+if (All checks pass?) then (no)
+  :ROLLBACK;
+  |LocalReceiptStore (adapter.out.files)
+  :Delete copied receipt file (best effort;
+  startup sweep removes orphans);
+  |Member (Swing view/presenter)|
+  :Show validation/authorization error;
+  stop
+else (yes)
+endif
+:Exact allocation in integer minor units
+(equal: quotient/remainder; percent: T x w / D,
+leftover by descending remainder, ties by order);
+:Insert PENDING expense, ordered shares,
+receipt record (same group);
+:Insert one Notification for every
+other current group member;
+if (All writes succeed?) then (no)
+  :ROLLBACK (notification failure
+  rolls back the submission);
+  |LocalReceiptStore (adapter.out.files)
+  :Delete copied receipt file (best effort);
+  |Member (Swing view/presenter)|
+  :Show failure; no success indication;
+  stop
+else (yes)
+  :COMMIT;
+endif
+
+|Member (Swing view/presenter)|
+:Show "Submitted - awaiting review"
+(success reported only after commit);
+
+|Reviewer (Swing view/presenter)|
+:Notification refresh (on demand or poll <= 60 s)
+shows expense and submitter;
+:Open expense details; choose Approve or Reject;
+
+|ExpenseService (application.service)|
+:Resolve trusted current account;
+
+|SQLite UnitOfWork (one connection)|
+:BEGIN IMMEDIATE (busy: bounded wait, then restart the whole
+transaction and rerun authorization; on exhaustion fail
+with no success indication);
+:Verify current membership and reviewer flag;
+if (Authorized reviewer?) then (no)
+  :ROLLBACK; no state or balance change;
+  |Reviewer (Swing view/presenter)|
+  :Show denial;
+  stop
+else (yes)
+endif
+:Conditional update:
+PENDING -> APPROVED or REJECTED;
+if (Exactly one row changed?) then (no)
+  :ROLLBACK; return Conflict
+  (already decided; no second effect);
+  |Reviewer (Swing view/presenter)|
+  :Show "Already decided";
+  stop
+else (yes)
+  :Insert ApprovalDecision;
+  :COMMIT;
+endif
+
+|Reviewer (Swing view/presenter)|
+if (Decision?) then (approve)
+  :Approved shares now feed derived balances;
+else (reject)
+  :Rejected expense has no financial effect;
 endif
 stop
 @enduml

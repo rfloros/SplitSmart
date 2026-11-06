@@ -18,6 +18,207 @@
 - Q: How should a person sign in to a SplitSmart account? (FR-001–FR-002) → A: Use verified email and password with password recovery.
 - Q: Should a recorded settlement payment reduce the balance immediately, or only after the recipient confirms receiving it? (FR-013) → A: The payment remains pending until the recipient confirms it; only then does the balance change.
 
+## Architecture and Scope Decision (2026-11-05)
+
+**Decision record**: [docs/decisions.md](../../docs/decisions.md). Review history:
+[architecture-review.md](../../docs/architecture-review.md) and
+[reviews/architecture-reviews.md](../../docs/reviews/architecture-reviews.md) (historical;
+they are not edited to endorse this decision).
+
+CIS 285 is a short lab sequence that ends after the next continuation. The user
+(project owner) therefore selected **Architecture B, simplified**: one Java 21/Maven
+module, one local Swing application, one embedded SQLite database, and an
+app-managed local receipt directory. The previously proposed shared-server design
+("Architecture A": HTTPS service, PostgreSQL, real mail delivery, shared receipt
+storage) is **outside this implementation scope**; its documents are retained only as
+a historical comparison and as a future-extension reference. This decision is an
+implementation choice. It does not change, narrow, or satisfy the customer
+requirements in `UserRequirement.md` or the full-product FR/AC/NFR/SC identifiers
+below. Generated artifacts remain pending human review (constitution, Principle V).
+
+### Accepted lab scope exceptions
+
+These exceptions are the user's accepted lab scope. Recording them here does not claim
+that the complete product, or any listed criterion, is satisfied.
+
+| Exception | Affected criteria | Lab behavior and full-product status |
+|---|---|---|
+| Single-device simulation | Shared-use customer scenarios; FR-002–FR-003 and group workflows FR-004–FR-015; network conditions in NFR-003–NFR-004 | Multiple accounts use one local database, potentially by signing in sequentially. No synchronization across computers. Local acceptance does not prove distributed collaboration or network performance. |
+| Simulated verification/recovery | FR-001–FR-002, AC-001 | In-app outbox exposes verification/recovery messages for the lab. It demonstrates token lifecycle, not ownership of a real email address or production identity assurance. |
+| Deferred platforms | FR-016, AC-012, SC-007; cross-client portion of NFR-005 | No web, Android, or iOS clients are delivered. A future REST adapter can host the same use cases centrally; it is not implemented now. |
+
+Further limits that are unchanged from the earlier spec and remain in force for the
+lab: FR-010 is delivered only as a **single-reviewer** policy (multi-stage approval is
+future work); notifications are **in-app only** (email, push, and SMS are future work).
+
+### Lab design rules (resolve ambiguities; not customer requirements)
+
+These rules are lab design decisions made to implement the clarified FRs. Where a rule
+is a new default it is labeled **(lab default)**.
+
+**Identity and the simulated outbox (FR-001–FR-002)**
+
+- Email addresses are normalized (trimmed, lower-cased with a locale-independent
+  rule) and are unique across **all** accounts, including unverified ones.
+  Registering an address already associated with any account is rejected.
+- Verification and recovery messages are written to an **in-app simulated outbox**.
+  The sign-in window offers a **"Lab outbox (simulated email)"** screen, available
+  **before sign-in**, where the tester enters an email address to read the messages
+  addressed to it. It is a lab-only facility with no real email-ownership guarantee,
+  and by design it reveals which addresses have pending messages. Real delivery
+  would not expose such a screen.
+- Tokens are random, stored only as hashes, expiring (lab default: 30 minutes for
+  verification, 15 minutes for recovery) and single-use; issuing a new token
+  invalidates the previous one. Password recovery responses are identical whether or
+  not an account exists (the outbox screen is the lab-only exception).
+- A **trusted current-account context** is established only by a successful sign-in
+  use case and cleared on sign-out. Use-case commands do not carry an actor/account
+  ID for the caller; any account IDs in a command identify *other* parties
+  (participants, payer, recipient, new member) and never substitute for
+  authentication. A use case invoked with no signed-in context is denied.
+
+**Money and exact allocation (FR-004–FR-007, NFR-001)**
+
+- Monetary values and decimal inputs use `BigDecimal`; `float` and `double` are never
+  used for money. A `Money` value carries a currency. Each group has exactly one
+  explicitly supported currency and scale (lab default supported set: USD and EUR at
+  scale 2, JPY at scale 0; Open Question 1 remains open for the full product).
+- Input decimals must be plain decimal text (no exponent). An amount that cannot be
+  represented at the group's scale **without rounding is rejected**; for example USD
+  `10.005` is rejected, while USD `10.000` is exact and normalizes to `10.00`. The
+  system never silently rounds user input.
+- Amounts convert **exactly** to integer minor units with overflow checking. Lab
+  limits: one expense or payment amount is at most 10^12 minor units (for USD,
+  10,000,000,000.00); input text is at most 32 characters; percentages have at most 4
+  decimal places. Larger values are rejected before any state changes. Stored amounts
+  are SQLite signed 64-bit integers plus the currency code.
+- Allocation (exact, integer arithmetic; intermediate products/remainders use
+  arbitrary-precision integers):
+  1. Validate positive amount, unique current-member participants, and currency;
+     convert the total `T` to integer minor units.
+  2. **Equal split**: `quotient = T div n`, `remainder = T mod n`. Each participant
+     receives the quotient; the first `remainder` participants in stored stable order
+     receive one extra unit.
+  3. **Percentage split**: require percentages `>= 0` summing exactly to 100. With `k`
+     the common decimal scale of the entered percentages, let `w_i` be each
+     percentage as an integer at scale `k` and `D = 100 x 10^k`. For each participant
+     compute `T x w_i` and divide by `D`, keeping the exact integer quotient (the
+     floor share) and remainder. The leftover units `T - sum(floors)` are assigned
+     one each by descending remainder, ties broken by stored participant order.
+  4. Reconcile: shares must equal `T` exactly; no approximate intermediate division
+     is used.
+- Aggregation of balances and report totals is done **application-side with
+  arbitrary-precision integers** over per-row minor-unit values. SQLite `SUM` or other
+  floating-point aggregation is not used for money, so there is no aggregate range
+  limit other than memory.
+- Signed balances are a separate type from the positive amounts accepted for
+  expenses and payments. A payer's own share creates no self-debt; an excluded payer
+  is owed every participant share (FR-005, FR-012).
+
+**Transactions, notifications, and balances (FR-009, FR-011–FR-013)**
+
+- Application services orchestrate each use case directly inside a `UnitOfWork`.
+  There is no event bus, domain-event pipeline, handler phase, separate ledger table,
+  or notification retry/outbox subsystem. (The simulated *email* outbox above is a
+  separate feature.)
+- **Expense submission** atomically stores the pending expense, its ordered shares,
+  its receipt reference, and one notification per *other* current group member. A
+  notification failure rolls back the submission; success is reported only after
+  commit.
+- **Approval/rejection** conditionally transitions a pending expense once and records
+  its decision in the same transaction. Pending and rejected expenses have no
+  financial effect.
+- **Payments** are recorded as pending. Recipient confirmation conditionally
+  transitions pending to confirmed once. Pending payments have no financial effect.
+- Pairwise balances are **derived** from approved expense shares and confirmed
+  payments (the authoritative "financial history"). No independently mutable balance
+  totals or duplicate postings are stored.
+- Notifications are read only by their recipient after rechecking current
+  membership. The client refreshes on demand and polls at an interval of **at most 60
+  seconds** while signed in. Local availability is tested separately from the
+  network-oriented NFR-004.
+
+**Concurrency protocol (FR-011, FR-013)**
+
+- **Every state-changing use case obtains a SQLite write transaction with
+  `BEGIN IMMEDIATE` before reading any mutable state used for validation.** All
+  repository operations in the use case share that connection/transaction; reads,
+  checks, conditional updates, and commit form one operation.
+- Payment confirmation: resolve the trusted caller; acquire the write transaction;
+  load the payment; verify current membership of the actor and both payment parties
+  in that group; verify the actor is the recipient; require `PENDING`; derive the
+  current net debt payer-to-recipient inside the transaction; reject a payment
+  exceeding that debt; only then conditionally confirm and commit.
+  Membership changes and all other financial writes use the same protocol, so they
+  cannot interleave with these checks.
+- SQLite serializes writers for the local database. If the database is busy/locked,
+  the use case waits for a bounded time and, on failure, **restarts the whole
+  transaction** (rerunning authorization and debt checks), up to a bounded number of
+  attempts (lab default: about 5 seconds per attempt, 3 attempts). On exhaustion it
+  returns a clear failure with no success indication and no financial change.
+- Per-row version/conditional checks alone are not relied on to protect different
+  payment rows against the same debt. Read-only report queries use one consistent
+  read transaction/snapshot.
+- **Example**: the debt is 100 and two distinct pending payments are 60 each. If both
+  recipients' confirmations race, only one is confirmed; the second, serialized
+  behind it, derives the remaining debt of 40, fails the check, stays pending, and
+  reports a validation error. Repeating confirmation of the already-confirmed payment
+  is refused as a conflict and cannot change the balance a second time.
+
+**Reviewer designation and group membership (FR-003, FR-010)**
+
+- Roles are `MANAGER` and `MEMBER`; "reviewer" is a flag on a membership. The creator
+  and any designated manager may add/remove members, change an existing member's role,
+  and set or clear an existing member's reviewer flag. Ordinary members may not.
+- **(lab default)** On group creation the creator is a manager and a reviewer.
+- **(lab default)** Removing a member, demoting a manager, or clearing a reviewer flag
+  is rejected if it would leave the group with no reviewer (or no manager).
+- **(lab default)** A reviewer may decide an expense they submitted themselves;
+  otherwise a two-person group could deadlock. Open Question 8 asks whether the full
+  product must forbid this.
+- A removed member immediately loses access to the group's restricted expense,
+  receipt, notification, payment, and report details. Their historical approved
+  expenses and confirmed payments remain in the financial history; pending items
+  naming a removed party cannot be confirmed or decided by that party.
+
+**Receipts (FR-008)**
+
+- Receipts are local files in an app-managed directory, private to the application,
+  referenced by opaque IDs (never by filesystem path) and retrieved only through an
+  authorized use case that rechecks current membership.
+- **(lab default)** JPEG or PNG only, validated by file content (not extension), at
+  most 10 MiB (Open Question 7 remains open for the full product).
+- The receipt record is created in the same database transaction as, and in the
+  same group as, its expense; a receipt cannot be linked to another group or reused.
+- File I/O is **not** part of the SQLite atomic commit. The file is validated and
+  copied before the transaction; if submission then fails or rolls back, the copied
+  file is deleted (best effort), and a startup sweep deletes receipt files that have
+  no database record. Invalid or unreadable receipts are reported and never treated as
+  valid attachments.
+
+**Reports (FR-014–FR-015)**
+
+- Financial totals count **approved expenses** and **confirmed payments** only.
+  Pending and rejected expenses and pending payments appear only in explicitly
+  separate status/history counts and never in financial totals.
+- Date-filtered totals use the entered expense or payment date; both endpoints are
+  inclusive; an end date earlier than the start date is rejected; no matches produce
+  zero totals and empty lists.
+- Current balances use all approved/confirmed history, are not date-filtered, and are
+  labeled "current as of" the time of the report.
+
+### Applicability of full-product criteria to the lab
+
+| Criteria | Lab applicability |
+|---|---|
+| AC-001, FR-001–FR-002 | Demonstrated with simulated delivery only; real-email ownership not demonstrated. |
+| AC-002–AC-011 | Verified locally against one SQLite database, with sequential sign-in by several accounts. |
+| AC-012, FR-016, SC-007, cross-client part of NFR-005 | Not delivered in the lab; remain full-product gates. |
+| NFR-002 | Verified locally for use cases/presenters (non-member and unauthorized-reviewer denial). |
+| NFR-003, NFR-004, SC-004, SC-005 | Local measurements, if any, are labeled local and do not establish network performance or delivery. |
+| NFR-001, NFR-006, SC-002, SC-003, SC-006 | Verifiable locally. |
+| FR-010 (multi-stage) | Single reviewer only; multi-stage is future work. |
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### Actors
@@ -328,6 +529,14 @@ customer's primary web, Android, or iOS platform requirement. Those clients rema
 in the full-product requirements and require their own delivery scope and
 verification.
 
+Per the 2026-11-05 decision above, the MVP is a **single-device local simulation**
+(one module, one embedded SQLite database, local receipt directory, simulated
+verification/recovery outbox). The exception table and lab design rules in
+"Architecture and Scope Decision" govern how each FR is exercised in the lab.
+Design artifacts: [architecture.md](./architecture.md),
+[data-model.md](./data-model.md), [contracts/](./contracts/README.md), and the
+diagrams in [diagrams/](./diagrams/).
+
 ### Key Entities
 
 - **Account**: A person with unique sign-in credentials and private account data.
@@ -387,6 +596,11 @@ verification.
   and SMS delivery are not assumed.
 - Java 21, Maven, Java Swing, JUnit 5, and PlantUML are project implementation
   constraints from the constitution, not customer requirements.
+- The lab runs as a single-device simulation with simulated verification/recovery
+  delivery and no web/mobile clients; these are accepted scope exceptions (see
+  "Architecture and Scope Decision"), not claims that the full product is delivered.
+- Lab currency set, token lifetimes, retry bounds, receipt limits, and reviewer
+  defaults are lab design decisions documented in "Architecture and Scope Decision".
 
 ## Open Questions
 
@@ -401,4 +615,10 @@ verification.
 5. Are report export formats or sharing capabilities required?
 6. Must the web, Android, and iOS clients launch together, and which workflows must
    be available on each at launch?
-7. What receipt image types and maximum file sizes are acceptable?
+7. What receipt image types and maximum file sizes are acceptable? (Lab default:
+   JPEG/PNG, 10 MiB; unresolved for the full product.)
+8. May a reviewer approve or reject an expense they submitted themselves? (Lab
+   default: yes, to avoid deadlock in small groups.)
+9. What should happen to a removed member's outstanding balances and pending
+   payments in the full product? (Lab: history is retained; pending items naming a
+   removed party cannot be confirmed.)

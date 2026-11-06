@@ -1,102 +1,211 @@
 @startuml
-title SplitSmart Application and Service Layers
+title SplitSmart Application Structure - simplified Architecture B (single module, local)
 hide empty members
-skinparam componentStyle rectangle
+skinparam classAttributeIconSize 0
 
-package "Desktop client" {
-  class SwingView
-  class SwingPresenter
-  class ApiClient
-  SwingView --> SwingPresenter
-  SwingPresenter --> ApiClient : HTTPS request
+package "adapter.in.swing" {
+  interface ExpenseFormView
+  class ExpenseFormPanel <<javax.swing>>
+  class ExpenseFormPresenter
+  interface ReviewQueueView
+  class ReviewQueuePanel <<javax.swing>>
+  class ReviewQueuePresenter
+  class PaymentsPresenter
+  class BalancesPresenter
+  class ReportPresenter
+  class NotificationPresenter
+  class LabOutboxPresenter
+  class UiBackgroundRunner
+  class MoneyFormatter
 }
 
-package "Service adapters" {
-  class RestController
-  class RequestAuthenticator
-  RestController --> RequestAuthenticator
+package "application.port.in" {
+  interface RegisterAccountUseCase
+  interface VerifyEmailUseCase
+  interface SignInUseCase
+  interface RecoverPasswordUseCase
+  interface ReadSimulatedOutboxUseCase
+  interface ManageGroupUseCase
+  interface SubmitExpenseUseCase
+  interface DecideExpenseUseCase
+  interface GetReceiptUseCase
+  interface RecordPaymentUseCase
+  interface ConfirmPaymentUseCase
+  interface QueryBalancesUseCase
+  interface QueryNotificationsUseCase
+  interface GenerateReportUseCase
+  class "Commands / Result DTOs" as Dtos <<immutable>>
 }
 
-package "Application use cases" {
-  class IdentityService
+package "application.service" {
+  class AccountService
   class GroupService
   class ExpenseService
-  class ApprovalService
-  class BalanceQueryService
   class PaymentService
-  class ReportingService
-  class NotificationService
+  class BalanceQueryService
+  class NotificationQueryService
+  class ReportService
 }
 
-package "Domain" {
-  class SplitAllocator
-  class Expense
-  class Payment
-  class Money
+package "application.authz" {
+  class CurrentAccountContext
+  class AccessPolicy
 }
 
-package "Ports" {
+package "application.port.out" {
+  interface UnitOfWork
   interface AccountRepository
   interface GroupRepository
   interface ExpenseRepository
   interface PaymentRepository
   interface NotificationRepository
-  interface ReceiptStorage
-  interface EmailDelivery
-  interface UnitOfWork
+  interface ReceiptStore
+  interface PasswordHasher
+  interface VerificationSender
+  interface OutboxReader
+  interface Clock
 }
 
-package "Infrastructure adapters" {
-  class PostgreSqlRepositories
-  class PostgreSqlUnitOfWork
-  class PrivateReceiptStore
-  class EmailProviderAdapter
+package "domain" {
+  class Account
+  class Group
+  class Expense
+  class Payment
+  class Notification
+  class Money
+  class ShareAllocator
+  class ApprovalPolicy
 }
 
-ApiClient --> RestController : OpenAPI contract
-RestController --> IdentityService
-RestController --> GroupService
-RestController --> ExpenseService
-RestController --> ApprovalService
-RestController --> BalanceQueryService
-RestController --> PaymentService
-RestController --> ReportingService
-RestController --> NotificationService
+package "adapter.out.persistence" {
+  class SqliteUnitOfWork
+  class SqliteRepositories
+  class SqliteSimulatedOutbox
+}
 
-ExpenseService --> SplitAllocator
-ExpenseService --> Expense
-ApprovalService --> Expense
-BalanceQueryService --> Expense
-BalanceQueryService --> Payment
-PaymentService --> Payment
-IdentityService --> AccountRepository
-IdentityService --> EmailDelivery
+package "adapter.out.files" {
+  class LocalReceiptStore
+}
+
+package "adapter.out.security" {
+  class Pbkdf2PasswordHasher
+}
+
+package "adapter.out.system" {
+  class SystemClock
+}
+
+package "bootstrap" {
+  class CompositionRoot
+}
+
+ExpenseFormPanel ..|> ExpenseFormView
+ReviewQueuePanel ..|> ReviewQueueView
+ExpenseFormPresenter --> ExpenseFormView
+ReviewQueuePresenter --> ReviewQueueView
+ExpenseFormPresenter --> SubmitExpenseUseCase
+ReviewQueuePresenter --> DecideExpenseUseCase
+PaymentsPresenter --> RecordPaymentUseCase
+PaymentsPresenter --> ConfirmPaymentUseCase
+BalancesPresenter --> QueryBalancesUseCase
+ReportPresenter --> GenerateReportUseCase
+NotificationPresenter --> QueryNotificationsUseCase
+LabOutboxPresenter --> ReadSimulatedOutboxUseCase
+ExpenseFormPresenter ..> UiBackgroundRunner : off EDT, result back on EDT
+ExpenseFormPresenter ..> Dtos
+
+AccountService ..|> RegisterAccountUseCase
+AccountService ..|> VerifyEmailUseCase
+AccountService ..|> SignInUseCase
+AccountService ..|> RecoverPasswordUseCase
+AccountService ..|> ReadSimulatedOutboxUseCase
+GroupService ..|> ManageGroupUseCase
+ExpenseService ..|> SubmitExpenseUseCase
+ExpenseService ..|> DecideExpenseUseCase
+ExpenseService ..|> GetReceiptUseCase
+PaymentService ..|> RecordPaymentUseCase
+PaymentService ..|> ConfirmPaymentUseCase
+BalanceQueryService ..|> QueryBalancesUseCase
+NotificationQueryService ..|> QueryNotificationsUseCase
+ReportService ..|> GenerateReportUseCase
+
+AccountService --> AccountRepository
+AccountService --> PasswordHasher
+AccountService --> VerificationSender
+AccountService --> OutboxReader
+AccountService --> CurrentAccountContext : sets on sign-in
+AccountService --> UnitOfWork
+GroupService --> AccessPolicy
 GroupService --> GroupRepository
+GroupService --> UnitOfWork
+ExpenseService --> AccessPolicy
 ExpenseService --> ExpenseRepository
-ExpenseService --> ReceiptStorage
-ExpenseService --> NotificationRepository
+ExpenseService --> GroupRepository
+ExpenseService --> NotificationRepository : writes in same transaction
+ExpenseService --> ReceiptStore
 ExpenseService --> UnitOfWork
-ApprovalService --> ExpenseRepository
-ApprovalService --> UnitOfWork
+PaymentService --> AccessPolicy
+PaymentService --> CurrentAccountContext
+PaymentService --> GroupRepository : current membership
+PaymentService --> ExpenseRepository : derive debt
 PaymentService --> PaymentRepository
 PaymentService --> UnitOfWork
+BalanceQueryService --> AccessPolicy
 BalanceQueryService --> ExpenseRepository
 BalanceQueryService --> PaymentRepository
-ReportingService --> ExpenseRepository
-ReportingService --> PaymentRepository
-NotificationService --> NotificationRepository
+NotificationQueryService --> AccessPolicy
+NotificationQueryService --> NotificationRepository
+ReportService --> AccessPolicy
+ReportService --> ExpenseRepository
+ReportService --> PaymentRepository
+AccessPolicy --> CurrentAccountContext
+AccessPolicy --> GroupRepository
+ExpenseService --> Clock
+PaymentService --> Clock
+NotificationQueryService --> Clock
 
-PostgreSqlRepositories ..|> AccountRepository
-PostgreSqlRepositories ..|> GroupRepository
-PostgreSqlRepositories ..|> ExpenseRepository
-PostgreSqlRepositories ..|> PaymentRepository
-PostgreSqlRepositories ..|> NotificationRepository
-PostgreSqlUnitOfWork ..|> UnitOfWork
-PrivateReceiptStore ..|> ReceiptStorage
-EmailProviderAdapter ..|> EmailDelivery
+ExpenseService ..> Expense
+ExpenseService ..> Notification
+ExpenseService ..> ShareAllocator
+ExpenseService ..> ApprovalPolicy
+PaymentService ..> Payment
+GroupService ..> Group
+AccountService ..> Account
+BalanceQueryService ..> Money
 
-note bottom of SwingPresenter
-  No business rules, SQL, or direct database access.
-  Run network work off the Swing EDT.
+SqliteUnitOfWork ..|> UnitOfWork
+SqliteRepositories ..|> AccountRepository
+SqliteRepositories ..|> GroupRepository
+SqliteRepositories ..|> ExpenseRepository
+SqliteRepositories ..|> PaymentRepository
+SqliteRepositories ..|> NotificationRepository
+SqliteSimulatedOutbox ..|> VerificationSender
+SqliteSimulatedOutbox ..|> OutboxReader
+LocalReceiptStore ..|> ReceiptStore
+Pbkdf2PasswordHasher ..|> PasswordHasher
+SystemClock ..|> Clock
+SqliteRepositories ..> SqliteUnitOfWork : shares one connection
+SqliteSimulatedOutbox ..> SqliteUnitOfWork : joins active transaction
+
+CompositionRoot ..> ExpenseService : wires
+CompositionRoot ..> SqliteUnitOfWork : wires
+CompositionRoot ..> LocalReceiptStore : wires
+
+note as N1
+  Depends only on application.port.in.
+  No business decisions, SQL, or file access.
+  Planned import-rule check (not yet implemented):
+  domain/application must not import javax.swing,
+  java.sql or adapter.*; adapter.in.swing must not
+  import domain, application.service or port.out.
 end note
+
+note as N2
+  Every state-changing use case runs one
+  BEGIN IMMEDIATE transaction on one connection.
+  Receipt file I/O is outside this transaction.
+  No REST controller, PostgreSQL, event bus or handlers.
+end note
+N1 .. ExpenseFormPresenter
+N2 .. SqliteUnitOfWork
 @enduml

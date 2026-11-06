@@ -1,77 +1,72 @@
 # Implementation Plan: SplitSmart Expense Sharing
 
-**Branch**: `001-expense-sharing` | **Date**: 2026-11-05 | **Spec**: [spec.md](./spec.md)
+**Branch**: `lab7-architecture` (working branch; the spec's branch field is unmanaged) | **Date**: 2026-11-05 | **Spec**: [spec.md](./spec.md)
 
-**Input**: Feature specification, recorded clarifications, and project constitution.
+**Input**: Feature specification (including the 2026-11-05 architecture/scope decision),
+project constitution, and [docs/decisions.md](../../docs/decisions.md).
+
+> This plan was realigned from the earlier shared-server design to the user-selected
+> **simplified Architecture B**. The earlier design is kept as a historical comparison
+> in [research.md](./research.md). Everything below is a plan; nothing has been built.
 
 ## Summary
 
-Design a Java 21/Maven expense-sharing product with a Swing desktop client separated
-from business logic and a shared HTTPS service backed by PostgreSQL. The service is
-the source of truth for accounts, groups, expenses, decisions, payments, and derived
-balances; it supports transactions and lets future clients use the same application
-operations. Money uses `BigDecimal` in the domain and exact integer minor units in
-persistence. The MVP uses single-stage expense review and in-application
-notifications. The web, Android, and iOS clients and external email/push/SMS
-notifications are not delivered by this Swing slice.
+A single Java 21/Maven module containing a local Swing application separated from
+business logic by ports and adapters (passive views, plain-Java presenters, immutable
+command/result DTOs, manual composition root). Persistence is one embedded SQLite
+database; receipts are files in an app-managed local directory; verification and
+recovery messages go to a simulated in-app outbox. Money uses `BigDecimal` at the
+domain boundary with exact integer minor-unit arithmetic and storage. The MVP uses
+single-reviewer approval and in-app notifications. No server, HTTPS API, PostgreSQL,
+real mail provider, cloud storage, synchronization, or deployment work is planned.
+Web, Android, and iOS clients (FR-016) are deferred.
 
 ## Technical Context
 
 **Language/Version**: Java 21
 
-**Primary Dependencies**: Maven; Java Swing desktop client; HTTPS/JSON REST API
-described with OpenAPI; PostgreSQL persistence through JDBC; JUnit 5; PlantUML.
-The HTTP framework and email delivery provider are deployment choices behind the
-documented contracts, not prerequisites for this architecture.
+**Primary Dependencies**: Maven; Java Swing; an SQLite JDBC driver (single adapter
+dependency); JUnit 5; PlantUML. The JDK provides password hashing (PBKDF2) and
+cryptographic randomness. No HTTP framework, mail provider, or DI framework.
 
-**Storage**: PostgreSQL for authoritative account and group data; private receipt
-content storage behind a `ReceiptStorage` port, with metadata and ownership in
-PostgreSQL. Currency amounts persist as integer minor units with an ISO currency
-code, not floating-point SQL values.
+**Storage**: One embedded SQLite file (WAL journal mode planned). Amounts persist as
+signed 64-bit integer minor units plus ISO currency code. Receipt content lives in a
+private app-managed directory addressed by opaque IDs; metadata lives in SQLite.
 
-**Testing**: JUnit 5 unit tests for domain and use cases; PostgreSQL-backed
-integration tests for transactional operations; API contract tests; Swing
-presentation tests limited to view behavior and delegation.
+**Testing** (all planned, none written): JUnit 5 unit tests with in-memory fakes for
+domain/use cases; presenter tests with fake views; real-SQLite tests for rollback,
+uniqueness, and write-serialization behavior. See [quickstart.md](./quickstart.md).
 
-**Target Platform**: Java 21 desktop (Swing) plus a Java 21 service on a supported
-server runtime. Future browser and mobile clients are outside this implementation
-slice.
+**Target Platform**: Java 21 desktop on one machine.
 
-**Project Type**: Maven multi-module desktop-client and service application.
+**Project Type**: Single Maven module.
 
-**Performance Goals**: Preserve the spec's NFR-003 target: 95% of common
-expense, balance, and report views usable within 3 seconds for groups of up to 100
-members and 10,000 expenses under ordinary network conditions. This is a
-verification target, not a result established by this design.
+**Performance Goals**: The spec's NFR-003/NFR-004 targets are network-oriented
+full-product targets. For the lab, any local measurements are labeled local and do not
+establish them. Notification refresh: on demand plus polling ≤ 60 s while signed in.
 
-**Constraints**: Swing views must not contain business decisions or persistence
-logic. All monetary logic uses `BigDecimal`; rounding is explicit and allocation
-shares reconcile exactly. Expense decisions and payment confirmations must be
-transactional and idempotent. Access to group records is authorized on the service.
-Use one supported ISO currency per group; multi-currency conversion is excluded.
-Receipt uploads accept JPEG or PNG images up to 10 MiB.
+**Constraints**: Swing views contain no business decisions or persistence. Money uses
+`BigDecimal`; amounts not exact at the group scale are rejected; allocation is exact
+integer arithmetic. Every state-changing use case takes a `BEGIN IMMEDIATE` write
+transaction before reading mutable state used for validation. Receipt file I/O is not
+part of the SQLite commit. One supported currency per group (lab set USD, EUR, JPY).
+Receipts: JPEG/PNG ≤ 10 MiB (lab default).
 
-**Scale/Scope**: Initial desktop client, shared service, and one relational database;
-single-stage review, in-app notifications, core group/expense/balance/payment
-workflows, and date-filtered reports. The spec's full web/mobile platform matrix and
-multiple approval stages remain future scope.
+**Scale/Scope**: Local single-device simulation of the full workflow set: accounts,
+groups, expenses with exact splits, single-reviewer approval, pairwise balances,
+pending/confirmed payments, in-app notifications, date-filtered reports.
 
 ## Constitution Check
 
-*Gate: evaluated before research and again after the design.*
-
 | Principle or constraint | Gate | Evidence / treatment |
 |---|---|---|
-| Customer requirements and traceability | PASS | [architecture.md](./architecture.md) maps architectural components to FR-IDs; implementation tasks and tests must continue this trace. |
-| Object-oriented design and GUI separation | PASS | Swing client calls application operations over the API; server-side domain and application logic do not depend on Swing. |
-| Monetary accuracy | PASS | Domain amounts are `BigDecimal`; currency precision and largest-remainder allocation are explicit; storage uses integer minor units. |
-| Verified behavior | PASS | JUnit 5 and requirement-linked test scenarios are planned in [quickstart.md](./quickstart.md). |
-| Human review of AI output | PASS | Generated diagrams and design are proposals requiring human review before acceptance. |
-| Java 21, Maven, Swing, JUnit 5, PlantUML | PASS | All are included in the technical context and project structure. |
-| Full platform scope (FR-016) | BOUNDED EXCEPTION | A Swing MVP does not meet the web-primary/Android/iOS customer requirement. This is explicit in the spec; the shared service/API enables future clients but does not claim delivery or verification of them. |
-
-No unapproved architecture violation is introduced. The bounded platform scope is
-not a claim that FR-016 has been satisfied.
+| Customer requirements and traceability | PLANNED | [architecture.md](./architecture.md) maps components to FR-IDs; AC/NFR/SC applicability to the lab is tabulated in the spec. No tests exist yet. |
+| Object-oriented design and GUI separation | PLANNED | Passive views and presenters depend only on inbound ports. Import-rule checks are planned, **not yet implemented**; a single module does not enforce isolation by itself. |
+| Monetary accuracy | PLANNED | `BigDecimal`, exact-scale input rejection, integer allocation, integer storage, application-side aggregation; tests to be written. |
+| Verified behavior | PLANNED | Scenarios described in the validation guide; executable tests and results do not exist. |
+| Human review of AI output | PENDING | All generated artifacts await human review. The architecture *choice* is the user's and is not reopened. |
+| Java 21, Maven, Swing, JUnit 5, PlantUML | PLANNED | Included in the technical context and structure. |
+| Full platform scope (FR-016) and shared use | RECORDED EXCEPTION | User-accepted lab exceptions in the spec: single-device simulation, simulated verification/recovery, deferred platforms. Not a claim that FR-016 or shared use is satisfied. The constitution is not amended. |
 
 ## Project Structure
 
@@ -84,8 +79,11 @@ specs/001-expense-sharing/
 ├── architecture.md
 ├── data-model.md
 ├── quickstart.md
+├── checklists/requirements.md
 ├── contracts/
-│   └── openapi.yaml
+│   ├── README.md                # explains current vs future contract
+│   ├── inbound-use-cases.md     # CURRENT: use-case/DTO contract (Markdown)
+│   └── openapi.yaml             # FUTURE, non-MVP REST proposal
 └── diagrams/
     ├── domain-model.puml
     ├── application-services.puml
@@ -93,44 +91,51 @@ specs/001-expense-sharing/
     └── payment-settlement.puml
 ```
 
-### Source Code (repository root)
+Also: [docs/architecture-alt/architecture-alt.md](../../docs/architecture-alt/architecture-alt.md)
+(selected-design narrative and trade-offs).
+
+### Planned source layout (not created)
 
 ```text
-pom.xml                         # Maven reactor
-splitsmart-core/
-├── src/main/java/               # Domain model, rules, use cases, and ports
-└── src/test/java/               # Domain and application unit tests
-splitsmart-server/
-├── src/main/java/               # REST adapters, PostgreSQL and receipt adapters,
-│                                # email adapter, and composition root
-├── src/main/resources/          # Versioned database schema
-└── src/test/java/               # API and persistence integration tests
-splitsmart-desktop/
-├── src/main/java/               # Swing views/presenters and HTTPS API client
-└── src/test/java/               # Presentation/delegation tests
+pom.xml                                  # one module
+src/main/java/.../domain
+src/main/java/.../application/port/in
+src/main/java/.../application/port/out
+src/main/java/.../application/service
+src/main/java/.../application/authz
+src/main/java/.../adapter/in/swing
+src/main/java/.../adapter/out/persistence
+src/main/java/.../adapter/out/files
+src/main/java/.../adapter/out/security
+src/main/java/.../adapter/out/system
+src/main/java/.../bootstrap
+src/main/resources/                      # numbered schema scripts (planned)
+src/test/java/                           # fakes-based, presenter, real-SQLite tests
 ```
 
-**Structure Decision**: Use three Maven modules. `splitsmart-core` owns the
-framework-independent domain and use cases; `splitsmart-server` implements ports
-and exposes the API; `splitsmart-desktop` is a thin Swing client and depends only
-on the API contract/client, not on server persistence. This keeps business behavior
-testable without constructing Swing components and avoids distributing database
-credentials to desktop installations.
+**Structure Decision**: One module with the package responsibilities in
+[architecture.md](./architecture.md). Package isolation is enforced only by planned
+import-rule checks; until they exist it is a design commitment.
 
 ## Design Outputs
 
 - [Architecture and FR traceability](./architecture.md)
-- [Domain model and validation](./data-model.md)
-- [REST interface contract](./contracts/openapi.yaml)
+- [Domain model, allocation, and validation](./data-model.md)
+- [Current inbound use-case contract](./contracts/inbound-use-cases.md)
+- [Future REST proposal (non-MVP)](./contracts/openapi.yaml) — see [contracts/README.md](./contracts/README.md)
 - [Domain class diagram](./diagrams/domain-model.puml)
-- [Application/service class diagram](./diagrams/application-services.puml)
+- [Application structure diagram](./diagrams/application-services.puml)
 - [Expense creation and approval activity](./diagrams/expense-creation-approval.puml)
 - [Payment settlement activity](./diagrams/payment-settlement.puml)
 - [Validation guide](./quickstart.md)
 
 ## Complexity Tracking
 
-No constitution violations require an exception beyond the explicitly bounded
-platform scope above. The three-module split is the minimum separation that keeps
-Swing independent from business logic and persistence while providing one shared
-service for multiple clients.
+| Item | Why kept | Simpler alternative rejected because |
+|---|---|---|
+| Ports/adapters, passive views, presenters, DTOs | Strong GUI/logic separation and JUnit 5 seams (Constitution II, IV). | Direct JDBC from Swing listeners couples UI to persistence and blocks Swing-free tests. |
+| `UnitOfWork` with `BEGIN IMMEDIATE` | Serializes financial writes locally, closing the cross-payment race. | Per-row version checks alone do not protect different payments against one debt. |
+| Simulated outbox | Demonstrates token lifecycle without a mail server. | Real mail delivery is outside the lab scope. |
+
+Removed from the earlier B proposal: event bus, domain-event pipeline, handler phases,
+posting handler, persisted ledger table, notification retry/outbox subsystem.

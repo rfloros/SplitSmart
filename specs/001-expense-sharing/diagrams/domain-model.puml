@@ -1,124 +1,165 @@
 @startuml
-title SplitSmart Domain Model
+title SplitSmart Domain Model (package: domain) - simplified Architecture B
 hide empty members
 skinparam classAttributeIconSize 0
 
+class Money <<value object>> {
+  amount : BigDecimal
+  currencyCode : String
+  currencyScale : int
+  minorUnits() : BigInteger
+}
+
+class SignedMoney <<value object>> {
+  amount : BigDecimal
+  currencyCode : String
+}
+
+class ShareAllocator <<domain service>> {
+  allocateEqual(total : Money, n : int) : List<Money>
+  allocatePercent(total : Money, percents : List<BigDecimal>) : List<Money>
+}
+
 class Account {
   accountId
-  email
+  normalizedEmail
   displayName
-  verificationState
+  verified : boolean
 }
 
 class Group {
   groupId
   name
   currencyCode
+  createdAt
 }
 
 class Membership {
-  role
-  active
+  role : MANAGER | MEMBER
+  reviewer : boolean
+  active : boolean
   joinedAt
-  removedAt
+  removedAt [optional]
 }
 
 class ApprovalPolicy {
-  kind
-  reviewerIds
+  kind : SINGLE_REVIEWER
+  decide(decision) : ExpenseStatus
 }
 
 class Expense {
   expenseId
-  date
+  total : Money
+  date : LocalDate
   description
-  splitMethod
-  status
-  version
+  splitMethod : EQUAL | PERCENTAGE
+  status : ExpenseStatus
+  createdAt
+}
+
+enum ExpenseStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 class ExpenseShare {
-  amount: BigDecimal
-  percentage: BigDecimal [optional]
-  participantOrder
+  participantOrder : int
+  amount : Money
+  percentage : BigDecimal [optional]
 }
 
 class ApprovalDecision {
-  result
+  result : APPROVE | REJECT
   decidedAt
   reason [optional]
 }
 
+class Receipt <<reference>> {
+  receiptId (opaque)
+  mediaType
+  sizeBytes
+  contentHash
+}
+
 class Payment {
   paymentId
-  amount: BigDecimal
-  date
-  status
+  amount : Money
+  date : LocalDate
+  status : PaymentStatus
+  createdAt
   confirmedAt [optional]
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
 }
 
 class Notification {
   notificationId
+  type : EXPENSE_CREATED
   createdAt
   readAt [optional]
 }
 
-class Money <<value object>> {
-  amount: BigDecimal
-  currencyCode
-  currencyScale
+class Balance <<derived result>> {
+  amount : SignedMoney
+  asOf
 }
 
-class Balance <<read projection>> {
-  debtorId
-  creditorId
-  amount: Money
-}
-
-class Report <<read projection>> {
+class Report <<derived result>> {
   startDate
   endDate
-  totals
+  approvedExpenseCount
+  approvedExpenseTotal : Money
+  confirmedPaymentCount
+  confirmedPaymentTotal : Money
+  pendingOrRejectedExpenseCount
+  pendingPaymentCount
 }
 
-class Receipt <<stored content>> {
-  receiptId
-  mediaType
-  sizeBytes
-  contentHash
-  privateStorageKey
-}
-
-Group "1" *-- "0..*" Membership
+Group "1" *-- "1..*" Membership
 Membership "*" --> "1" Account
 Group "1" *-- "1" ApprovalPolicy
-ApprovalPolicy "*" --> "*" Membership : authorized reviewers
+ApprovalPolicy "1" ..> "1..*" Membership : reviewers (reviewer = true)
 Group "1" *-- "0..*" Expense
 Expense "*" --> "1" Account : submitter
 Expense "*" --> "1" Account : payer
-Expense "1" *-- "1..*" ExpenseShare
+Expense "1" *-- "1..*" ExpenseShare : ordered
 ExpenseShare "*" --> "1" Account : participant
 Expense "1" *-- "0..1" ApprovalDecision
 ApprovalDecision "*" --> "1" Account : reviewer
+Expense --> ExpenseStatus
 Expense "1" o-- "0..1" Receipt
 Group "1" *-- "0..*" Payment
-Payment "*" --> "1" Account : payer/debtor
-Payment "*" --> "1" Account : recipient/creditor
+Payment "*" --> "1" Account : payer (debtor)
+Payment "*" --> "1" Account : recipient (creditor)
+Payment --> PaymentStatus
 Group "1" *-- "0..*" Notification
+Expense "1" <-- "0..*" Notification : about
 Notification "*" --> "1" Account : recipient
-Balance ..> ExpenseShare : approved expense obligations
-Balance ..> Payment : confirmed settlements
+Expense ..> ShareAllocator : shares computed by
+Balance ..> ExpenseShare : approved expenses only
+Balance ..> Payment : confirmed payments only
+Balance "*" --> "1" Account : debtor
+Balance "*" --> "1" Account : creditor
 Report ..> Expense
 Report ..> Payment
-Report ..> Balance
-Money .. Expense
-Money .. ExpenseShare
-Money .. Payment
-Money .. Balance
+Report ..> Balance : current (not date-filtered)
 
 note right of Balance
-  Derived from approved expense shares
-  and confirmed payments. Not stored as
-  an independently mutable balance.
+  Derived on demand from approved expense
+  shares and confirmed payments (the
+  "financial history"). Never stored as an
+  independently mutable total. Payer's own
+  share creates no self-debt.
+end note
+
+note bottom of Expense
+  PENDING and REJECTED expenses and PENDING
+  payments have no financial effect.
+  Transitions happen once, via conditional
+  update inside a UnitOfWork.
 end note
 @enduml

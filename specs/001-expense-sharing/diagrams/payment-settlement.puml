@@ -1,50 +1,107 @@
 @startuml
-title Payment Settlement
+title Payment Settlement - simplified Architecture B (serialized SQLite writes)
 
-|Payer client|
+|Payer (Swing view/presenter)|
 start
-:Enter recipient, amount, and date;
-:Submit payment;
+:Choose recipient, enter amount and date;
+:Submit (presenter runs use case off the EDT);
 
-|Service|
-:Authorize group membership;
-:Derive current outstanding obligation;
-if (Positive amount, correct currency,
- and within outstanding amount?) then (yes)
-  |PostgreSQL|
-  :Persist payment as PENDING;
-  |Service|
-  :Return pending payment;
-  note right
-    Pending payments do not
-    affect balances.
-  end note
-else (no)
-  :Return validation error;
+|PaymentService (application.service)|
+:Resolve trusted current account (payer);
+:Validate amount: plain decimal, exact at group scale,
+positive, within size limit;
+
+|SQLite UnitOfWork (one connection)|
+:BEGIN IMMEDIATE;
+:Verify current membership of payer and recipient;
+:Derive current net debt payer -> recipient from
+approved expense shares and confirmed payments;
+if (Valid, distinct parties, correct currency,
+amount <= net debt?) then (no)
+  :ROLLBACK;
+  |Payer (Swing view/presenter)|
+  :Show validation/authorization error;
   stop
+else (yes)
+  :Insert payment as PENDING;
+  :COMMIT;
 endif
 
-|Recipient client|
-:Review pending payment;
-:Confirm receipt;
+|Payer (Swing view/presenter)|
+:Payment shown as PENDING;
+note right
+  Pending payments have no financial effect.
+  Balances are unchanged.
+end note
 
-|Service|
-:Verify caller is recipient;
-:Recheck outstanding amount;
-|PostgreSQL|
-if (Still valid and payment is PENDING?) then (yes)
-  :Atomically transition to CONFIRMED;
-  :Commit once;
-  |Service|
-  :Return confirmed payment;
-  note right
-    Derived balance decreases
-    by the confirmed amount.
-  end note
+|Recipient (Swing view/presenter)|
+:Open pending payments; choose Confirm;
+:Submit (off the EDT);
+
+|PaymentService (application.service)|
+:Resolve trusted current account (actor);
+
+|SQLite UnitOfWork (one connection)|
+:BEGIN IMMEDIATE (before reading anything
+used for validation);
+if (Database busy/locked?) then (yes)
+  :Bounded wait; if still busy, ROLLBACK and
+  restart the whole transaction (bounded attempts);
+  if (Attempts exhausted?) then (yes)
+    |Recipient (Swing view/presenter)|
+    :Show "database busy" failure;
+    no success indication, no change;
+    stop
+  else (no)
+  endif
 else (no)
-  :Keep payment pending;
-  |Service|
-  :Return conflict/validation message;
 endif
+:Load payment;
+if (Actor and both parties are current
+group members?) then (no)
+  :ROLLBACK;
+  |Recipient (Swing view/presenter)|
+  :Show denial; no change;
+  stop
+else (yes)
+endif
+if (Actor is the recipient?) then (no)
+  :ROLLBACK;
+  |Recipient (Swing view/presenter)|
+  :Show denial; no change;
+  stop
+else (yes)
+endif
+if (Payment is PENDING?) then (no)
+  :ROLLBACK; return Conflict
+  (already confirmed; effect not repeated);
+  |Recipient (Swing view/presenter)|
+  :Show message;
+  stop
+else (yes)
+endif
+:Derive current net debt inside this transaction;
+if (Payment amount <= current net debt?) then (no)
+  :ROLLBACK; payment stays PENDING;
+  |Recipient (Swing view/presenter)|
+  :Show validation error
+  (e.g. debt 100, two payments of 60:
+  second sees remaining 40);
+  stop
+else (yes)
+  :Conditional update PENDING -> CONFIRMED;
+  if (Exactly one row changed?) then (no)
+    :ROLLBACK; return Conflict;
+    |Recipient (Swing view/presenter)|
+    :Show message;
+    stop
+  else (yes)
+    :COMMIT;
+  endif
+endif
+
+|Recipient (Swing view/presenter)|
+:Balance views now show the reduced debt
+(derived from confirmed payments);
 stop
 @enduml

@@ -1,12 +1,20 @@
+# FUTURE, NON-MVP PROPOSAL. This file is NOT the interface of the Swing application.
+# The CIS 285 lab implements a local single-module application (simplified
+# Architecture B, see docs/decisions.md); no server or REST API is built. The current
+# contract is contracts/inbound-use-cases.md. This sketch is retained only as a
+# starting point for a possible later server-hosted design (see contracts/README.md).
+# It has not been updated to the lab rules (reviewer updates, receipt-with-submission,
+# report status counts); the spec and inbound-use-cases.md take precedence.
 openapi: 3.1.0
 info:
-  title: SplitSmart API
-  version: 1.0.0
+  title: SplitSmart API (future, non-MVP proposal)
+  version: 0.0.0-proposal
   description: >
-    HTTPS/JSON contract for the Swing MVP and future clients. Group authorization
-    is enforced by the service for every protected operation. Expense-update
-    notifications are in-app; verification and recovery messages use the identity
-    email adapter.
+    FUTURE, NON-MVP proposal of an HTTPS/JSON contract for a possible server-hosted
+    SplitSmart and future web/mobile clients. Not implemented and not used by the
+    Swing MVP. Group authorization would be enforced by the service for every
+    protected operation. Expense-update notifications are in-app; verification and
+    recovery messages would use an identity email adapter.
 servers:
   - url: https://api.example.invalid/v1
 security:
