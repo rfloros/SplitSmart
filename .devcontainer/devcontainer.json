@@ -1,0 +1,24 @@
+
+{
+    "name": "SplitSmart Lab 8 AI Development",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "postCreateCommand": "init-splitsmart",
+    "forwardPorts": [3000],
+    "portsAttributes": {
+        "3000": {
+            "label": "SplitSmart Web Prototype",
+            "onAutoForward": "notify"
+        }
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "dbaeumer.vscode-eslint",
+                "bradlc.vscode-tailwindcss",
+                "Prisma.prisma"
+            ]
+        }
+    }
+}
