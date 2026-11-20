@@ -12,3 +12,47 @@ model EnvironmentCheck {
   message   String
   createdAt DateTime @default(now())
 }
+
+model Group {
+  id        Int       @id @default(autoincrement())
+  name      String
+  createdAt DateTime  @default(now())
+  members   Member[]
+  expenses  Expense[]
+}
+
+model Member {
+  id           Int                  @id @default(autoincrement())
+  name         String
+  groupId      Int
+  group        Group                @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdAt    DateTime             @default(now())
+  paidExpenses Expense[]            @relation("ExpensePayer")
+  shares       ExpenseParticipant[]
+
+  @@unique([groupId, name])
+}
+
+/// Amounts are stored as integer cents.
+model Expense {
+  id           Int                  @id @default(autoincrement())
+  description  String
+  amountCents  Int
+  groupId      Int
+  group        Group                @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  payerId      Int
+  payer        Member               @relation("ExpensePayer", fields: [payerId], references: [id])
+  createdAt    DateTime             @default(now())
+  participants ExpenseParticipant[]
+}
+
+/// One participant's share of an expense, in integer cents.
+model ExpenseParticipant {
+  expenseId  Int
+  expense    Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  memberId   Int
+  member     Member  @relation(fields: [memberId], references: [id])
+  shareCents Int
+
+  @@id([expenseId, memberId])
+}
