@@ -1,36 +1,47 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SplitSmart Prototype (CIS 285 Lab 9)
 
-## Getting Started
+A web app for tracking shared expenses within a group: create groups, add members,
+record equally split expenses, and view expense history and per-member balances.
 
-First, run the development server:
+Stack: Next.js 15 (App Router) · React 19 · TypeScript · Tailwind CSS 4 · Prisma 6 + SQLite · Vitest.
+
+## Running
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd prototype
+echo 'DATABASE_URL="file:./dev.db"' > .env   # only if .env is missing (it is gitignored)
+npx prisma db push                            # create/update prisma/dev.db and generate the client
+npm run dev                                   # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Run unit tests with `npm test`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Layout
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Path | Purpose |
+|---|---|
+| `prisma/schema.prisma` | `Group`, `Member`, `Expense`, `ExpenseParticipant` models (money stored as integer cents) |
+| `src/lib/money.ts` | Pure rules: amount parsing, equal split with deterministic remainder, balance calculation, formatting |
+| `src/lib/splitsmart.ts` | Service layer: validation and Prisma persistence |
+| `src/lib/api.ts` | Shared route helpers (error → HTTP status mapping) |
+| `src/app/api/groups/...` | JSON API route handlers |
+| `src/app/SplitSmartApp.tsx` | Client UI |
 
-## Learn More
+## API
 
-To learn more about Next.js, take a look at the following resources:
+| Method | Path | Body |
+|---|---|---|
+| GET | `/api/groups` | — |
+| POST | `/api/groups` | `{ name }` |
+| GET | `/api/groups/:id` | — returns members, expenses (newest first), balances |
+| POST | `/api/groups/:id/members` | `{ name }` |
+| POST | `/api/groups/:id/expenses` | `{ description, amount: "12.34", payerId, participantIds: number[] }` |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Validation errors return `400 { error }`; unknown groups return `404 { error }`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Business rules
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Amounts are parsed from decimal strings straight into integer cents (no floating point). They must be > $0, at most $1,000,000.00, and have at most 2 decimal places.
+- Each expense is split equally. Leftover cents go one each to participants in ascending member-ID order, so $10 split among three people gives $3.34 / $3.33 / $3.33.
+- The payer and all participants must be members of the expense's group.
+- Balance = amount paid − sum of own shares. Balances always sum to $0.00.
